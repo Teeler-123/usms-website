@@ -1,0 +1,736 @@
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, 
+  signInAnonymously, 
+  signInWithCustomToken, 
+  onAuthStateChanged 
+} from 'firebase/auth';
+import { 
+  getFirestore, 
+  doc, 
+  setDoc, 
+  collection, 
+  onSnapshot, 
+  updateDoc
+} from 'firebase/firestore';
+import { 
+  Shield, 
+  Lock, 
+  User, 
+  CheckCircle, 
+  Clock, 
+  XCircle, 
+  Settings, 
+  ChevronRight, 
+  FileText,
+  Briefcase,
+  Layers,
+  Plus,
+  Trash2,
+  ExternalLink,
+  Link as LinkIcon,
+  X,
+  Key
+} from 'lucide-react';
+
+// --- Firebase Configuration ---
+const firebaseConfig = JSON.parse(__firebase_config);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'roblox-us-marshals';
+
+// --- UI Components ---
+
+const StatusBadge = ({ status }) => {
+  const styles = {
+    'Pending': 'bg-yellow-100 text-yellow-800 border-yellow-200',
+    'Under Review': 'bg-blue-100 text-blue-800 border-blue-200',
+    'Accepted': 'bg-green-100 text-green-800 border-green-200',
+    'Rejected': 'bg-red-100 text-red-800 border-red-200',
+  };
+  return (
+    <span className={`px-3 py-1 rounded-full text-xs font-bold border ${styles[status] || 'bg-gray-100'}`}>
+      {(status || 'UNKNOWN').toUpperCase()}
+    </span>
+  );
+};
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [view, setView] = useState('home'); 
+  const [application, setApplication] = useState(null);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [passwordInput, setPasswordInput] = useState('');
+  const [authError, setAuthError] = useState(false);
+  
+  const [siteData, setSiteData] = useState({
+    adminPin: '1234', // Default PIN - Editable in Terminal
+    jobs: [
+      { id: Date.now() + 1, title: 'Deputy U.S. Marshal', description: 'Primary operational agents responsible for fugitive investigations.', status: 'Open' },
+      { id: Date.now() + 2, title: 'Detention Enforcement Officer', description: 'Responsible for prisoner safety and movement.', status: 'Open' }
+    ],
+    divisions: [
+      { id: Date.now() + 3, name: 'SOG (Special Operations Group)', status: 'Closed' },
+      { id: Date.now() + 4, name: 'Judicial Security', status: 'Open' },
+      { id: Date.now() + 5, name: 'Fugitive Task Force', status: 'Open' }
+    ],
+    judiciaryLinks: [
+      { label: 'Terms of Service', url: '#' },
+      { label: 'Privacy Directive', url: '#' },
+      { label: 'Marshal Standards', url: '#' }
+    ],
+    commsLinks: [
+      { label: 'HQ Discord', url: '#' },
+      { label: 'Internal Affairs', url: '#' },
+      { label: 'Civilian Inquiries', url: '#' }
+    ],
+    heroImage: 'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?auto=format&fit=crop&q=80&w=2070'
+  });
+  const [allApplications, setAllApplications] = useState([]);
+  const [isAdmin, setIsAdmin] = useState(false);
+
+  // --- Initialization & Auth ---
+  useEffect(() => {
+    const initAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        } else {
+          await signInAnonymously(auth);
+        }
+      } catch (error) {
+        console.error("Auth error:", error);
+      }
+    };
+    initAuth();
+
+    const unsubscribe = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // --- Firestore Sync ---
+  useEffect(() => {
+    if (!user) return;
+    
+    const siteDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'site_config', 'current');
+    
+    const unsubSite = onSnapshot(siteDocRef, (snap) => {
+      if (snap.exists()) {
+        setSiteData(prev => ({ ...prev, ...snap.data() }));
+      } else {
+        setDoc(siteDocRef, siteData).catch(err => console.error("Initial site data set error:", err));
+      }
+    }, (err) => console.error("Site data sync error:", err));
+
+    const appDocRef = doc(db, 'artifacts', appId, 'users', user.uid, 'application_data', 'main');
+    
+    const unsubApp = onSnapshot(appDocRef, (snap) => {
+      if (snap.exists()) setApplication(snap.data());
+    }, (err) => console.error("User app sync error:", err));
+
+    return () => {
+      unsubSite();
+      unsubApp();
+    };
+  }, [user, appId]);
+
+  useEffect(() => {
+    if (!user || !isAdmin) return;
+    
+    const appsCol = collection(db, 'artifacts', appId, 'public', 'data', 'applications');
+    const unsubAllApps = onSnapshot(appsCol, (snap) => {
+      const apps = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setAllApplications(apps);
+    }, (err) => console.error("Admin apps sync error:", err));
+
+    return () => unsubAllApps();
+  }, [user, isAdmin, appId]);
+
+  const updateSiteConfig = async (newData) => {
+    try {
+      const siteDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'site_config', 'current');
+      await setDoc(siteDocRef, newData);
+    } catch (e) {
+      console.error("Config update failed", e);
+    }
+  };
+
+  const handleAdminAuth = (e) => {
+    e.preventDefault();
+    if (passwordInput === siteData.adminPin) {
+      setIsAdmin(true);
+      setView('admin');
+      setShowAuthModal(false);
+      setPasswordInput('');
+      setAuthError(false);
+    } else {
+      setAuthError(true);
+    }
+  };
+
+  const submitApplication = async (formData) => {
+    if (!user || application) return;
+    const newAppData = {
+      userId: user.uid,
+      username: formData.username,
+      discord: formData.discord,
+      reason: formData.reason,
+      experience: formData.experience,
+      status: 'Pending',
+      submittedAt: new Date().toISOString()
+    };
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'application_data', 'main'), newAppData);
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'applications', user.uid), newAppData);
+      setView('dashboard');
+    } catch (e) { console.error("Submission failed", e); }
+  };
+
+  const updateAppStatus = async (targetUid, newStatus) => {
+    try {
+      const publicRef = doc(db, 'artifacts', appId, 'public', 'data', 'applications', targetUid);
+      const privateRef = doc(db, 'artifacts', appId, 'users', targetUid, 'application_data', 'main');
+      await updateDoc(publicRef, { status: newStatus });
+      await updateDoc(privateRef, { status: newStatus });
+    } catch (e) { console.error("Status update failed", e); }
+  };
+
+  // --- Dynamic Item Management ---
+  const addJob = () => {
+    const newJobs = [...siteData.jobs, { id: Date.now(), title: 'New Position', description: 'Enter requirements...', status: 'Open' }];
+    updateSiteConfig({ ...siteData, jobs: newJobs });
+  };
+
+  const removeJob = (id) => {
+    const newJobs = siteData.jobs.filter(j => j.id !== id);
+    updateSiteConfig({ ...siteData, jobs: newJobs });
+  };
+
+  const addDivision = () => {
+    const newDivs = [...siteData.divisions, { id: Date.now(), name: 'New Division', status: 'Open' }];
+    updateSiteConfig({ ...siteData, divisions: newDivs });
+  };
+
+  const removeDivision = (id) => {
+    const newDivs = siteData.divisions.filter(d => d.id !== id);
+    updateSiteConfig({ ...siteData, divisions: newDivs });
+  };
+
+  const addLink = (category) => {
+    const key = category === 'judiciary' ? 'judiciaryLinks' : 'commsLinks';
+    const newLinks = [...(siteData[key] || []), { label: 'New Link', url: '#' }];
+    updateSiteConfig({ ...siteData, [key]: newLinks });
+  };
+
+  const removeLink = (category, index) => {
+    const key = category === 'judiciary' ? 'judiciaryLinks' : 'commsLinks';
+    const newLinks = [...(siteData[key] || [])];
+    newLinks.splice(index, 1);
+    updateSiteConfig({ ...siteData, [key]: newLinks });
+  };
+
+  if (loading) return (
+    <div className="min-h-screen bg-slate-900 flex items-center justify-center text-white font-mono uppercase tracking-tighter">
+      <div className="flex flex-col items-center gap-4">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-yellow-500"></div>
+        <p className="opacity-50">Syncing with Mainframe...</p>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900 font-sans selection:bg-yellow-200">
+      
+      {/* Auth Modal */}
+      {showAuthModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-in fade-in duration-300">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden border border-slate-200">
+            <div className="bg-slate-900 p-6 flex justify-between items-center text-white">
+              <div className="flex items-center gap-3">
+                <Lock size={20} className="text-yellow-500" />
+                <h3 className="font-black uppercase tracking-widest text-sm">Staff Authentication</h3>
+              </div>
+              <button onClick={() => { setShowAuthModal(false); setAuthError(false); setPasswordInput(''); }} className="hover:bg-white/10 p-1 rounded transition">
+                <X size={20} />
+              </button>
+            </div>
+            <form onSubmit={handleAdminAuth} className="p-8 space-y-6">
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold uppercase text-slate-500 tracking-widest">Entry Clearance PIN</label>
+                <input 
+                  type="password"
+                  autoFocus
+                  required
+                  value={passwordInput}
+                  onChange={(e) => setPasswordInput(e.target.value)}
+                  className={`w-full px-4 py-4 bg-slate-50 border rounded-xl text-center text-2xl tracking-[0.5em] font-black focus:ring-2 outline-none transition ${authError ? 'border-red-500 ring-red-100' : 'border-slate-200 focus:ring-yellow-500'}`}
+                  placeholder="••••"
+                />
+                {authError && <p className="text-red-600 text-[10px] font-bold uppercase text-center mt-2 animate-bounce">Access Denied: Invalid Credentials</p>}
+              </div>
+              <button type="submit" className="w-full bg-slate-900 text-white font-black py-4 rounded-xl hover:bg-slate-800 transition shadow-xl uppercase tracking-widest text-xs">
+                Initialize Console
+              </button>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Navigation */}
+      <nav className="bg-slate-900 text-white px-6 py-4 flex flex-wrap gap-4 justify-between items-center sticky top-0 z-50 shadow-lg border-b border-slate-800">
+        <div className="flex items-center gap-3 cursor-pointer" onClick={() => setView('home')}>
+          <div className="bg-yellow-600 p-2 rounded shadow-inner">
+            <Shield size={24} />
+          </div>
+          <div>
+            <h1 className="font-bold text-lg tracking-tight uppercase leading-none">US Marshals Service</h1>
+            <p className="text-[10px] text-slate-400 mt-1 tracking-widest uppercase">Roblox Division</p>
+          </div>
+        </div>
+        
+        <div className="flex items-center gap-4 sm:gap-6 text-sm font-medium">
+          <button onClick={() => setView('home')} className={`hover:text-yellow-500 transition ${view === 'home' ? 'text-yellow-500' : ''}`}>Careers</button>
+          {application ? (
+            <button onClick={() => setView('dashboard')} className={`hover:text-yellow-500 transition ${view === 'dashboard' ? 'text-yellow-500' : ''}`}>Dashboard</button>
+          ) : (
+            <button onClick={() => setView('apply')} className={`hover:text-yellow-500 transition ${view === 'apply' ? 'text-yellow-500' : ''}`}>Apply</button>
+          )}
+          <button 
+            onClick={() => { 
+              if (isAdmin) {
+                setIsAdmin(false);
+                setView('home');
+              } else {
+                setShowAuthModal(true);
+              }
+            }}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded border border-slate-700 hover:bg-slate-800 transition ${isAdmin ? 'bg-slate-800 border-yellow-600' : ''}`}
+          >
+            {isAdmin ? <X size={14} /> : <Lock size={14} />} 
+            <span className="hidden sm:inline">{isAdmin ? 'Exit Terminal' : 'Staff Access'}</span>
+          </button>
+        </div>
+      </nav>
+
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 py-10">
+        {view === 'home' && (
+          <div className="space-y-12 animate-in fade-in duration-700">
+            <div className="relative rounded-2xl overflow-hidden h-[300px] sm:h-[450px] shadow-2xl group">
+              <img src={siteData.heroImage} alt="US Marshals" className="w-full h-full object-cover transition duration-700 group-hover:scale-105" />
+              <div className="absolute inset-0 bg-gradient-to-r from-slate-900 via-slate-900/60 to-transparent flex items-center p-6 sm:p-12">
+                <div className="max-w-lg space-y-4">
+                  <h2 className="text-3xl sm:text-5xl font-black text-white leading-tight uppercase tracking-tighter">Justice, Integrity, Service.</h2>
+                  <p className="text-slate-300 text-sm sm:text-base leading-relaxed">The U.S. Marshals Service is the nation's oldest federal law enforcement agency. Join our Roblox division today.</p>
+                  <button onClick={() => setView('apply')} className="bg-yellow-600 hover:bg-yellow-700 text-white px-8 py-3 rounded-lg font-bold transition flex items-center gap-2 group/btn shadow-lg w-fit">
+                    Join the Force <ChevronRight size={18} className="group-hover/btn:translate-x-1 transition" />
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+              <div className="md:col-span-2 space-y-6">
+                <h3 className="text-2xl font-bold flex items-center gap-2 text-slate-800 uppercase tracking-tighter">
+                  <Briefcase className="text-yellow-600" size={24} /> Career Opportunities
+                </h3>
+                <div className="grid gap-4">
+                  {siteData.jobs.map(job => (
+                    <div key={job.id} className="bg-white border border-slate-200 p-6 rounded-xl hover:shadow-md transition group">
+                      <div className="flex justify-between items-start mb-2">
+                        <h4 className="text-xl font-bold text-slate-800">{job.title}</h4>
+                        <span className={`text-[10px] font-bold px-2 py-1 rounded shadow-sm ${job.status === 'Open' ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                          {job.status.toUpperCase()}
+                        </span>
+                      </div>
+                      <p className="text-slate-600 text-sm mb-4 leading-relaxed">{job.description}</p>
+                      <button 
+                        disabled={job.status !== 'Open'} 
+                        onClick={() => setView('apply')}
+                        className="text-yellow-600 font-bold text-sm hover:underline disabled:text-slate-400 flex items-center gap-1"
+                      >
+                        Apply for this position <ChevronRight size={14} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-6">
+                <h3 className="text-2xl font-bold flex items-center gap-2 text-slate-800 uppercase tracking-tighter">
+                  <Layers className="text-yellow-600" size={24} /> Divisions
+                </h3>
+                <div className="bg-slate-900 text-white rounded-xl p-6 space-y-4 shadow-xl border border-slate-800">
+                  {siteData.divisions.map(div => (
+                    <div key={div.id} className="flex justify-between items-center border-b border-slate-800 pb-3 last:border-0 last:pb-0">
+                      <span className="font-medium text-slate-200 text-sm uppercase tracking-tight">{div.name}</span>
+                      <span className={`text-[10px] font-bold px-2 py-1 rounded ${div.status === 'Open' ? 'bg-green-600 text-white' : 'bg-slate-800 text-slate-400'}`}>
+                        {div.status.toUpperCase()}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {view === 'apply' && (
+          <div className="max-w-2xl mx-auto bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-500">
+            <div className="bg-slate-900 p-8 text-white">
+              <h2 className="text-2xl font-bold tracking-tight uppercase tracking-widest">Employment Application</h2>
+              <p className="text-slate-400 text-xs mt-1">Personnel Record Verification Required.</p>
+            </div>
+            
+            {application ? (
+              <div className="p-16 text-center space-y-6">
+                <div className="bg-blue-50 text-blue-700 p-8 rounded-full inline-flex items-center justify-center animate-pulse">
+                  <Clock size={64} />
+                </div>
+                <div className="space-y-2">
+                  <h3 className="text-2xl font-bold text-slate-900 uppercase">Application Pending</h3>
+                  <p className="text-slate-600 max-w-sm mx-auto">Monitor your dashboard for status updates.</p>
+                </div>
+                <button onClick={() => setView('dashboard')} className="bg-slate-900 text-white px-8 py-3 rounded-xl font-bold shadow-lg hover:bg-slate-800 transition">Access Dashboard</button>
+              </div>
+            ) : (
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                const fd = new FormData(e.target);
+                submitApplication(Object.fromEntries(fd));
+              }} className="p-8 space-y-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold uppercase text-slate-500 tracking-wider">Username</label>
+                    <input name="username" required className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-yellow-500 outline-none transition" placeholder="Username" />
+                  </div>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold uppercase text-slate-500 tracking-wider">Discord</label>
+                    <input name="discord" required className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-yellow-500 outline-none transition" placeholder="User#0000" />
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase text-slate-500 tracking-wider">Experience</label>
+                  <textarea name="experience" required rows="3" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-yellow-500 outline-none transition" placeholder="List prior groups..."></textarea>
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-bold uppercase text-slate-500 tracking-wider">Reason for Interest</label>
+                  <textarea name="reason" required rows="4" className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-yellow-500 outline-none transition" placeholder="Explain your motivations..."></textarea>
+                </div>
+                <button type="submit" className="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-4 rounded-xl shadow-xl transition-all flex items-center justify-center gap-2">
+                  <Shield size={20} /> Submit Application
+                </button>
+              </form>
+            )}
+          </div>
+        )}
+
+        {view === 'dashboard' && application && (
+          <div className="max-w-4xl mx-auto space-y-8 animate-in slide-in-from-bottom-8 duration-500">
+            <div className="bg-white border border-slate-200 rounded-2xl shadow-xl overflow-hidden">
+              <div className="bg-slate-900 p-8 sm:p-12 text-white flex flex-col sm:flex-row justify-between items-start sm:items-end gap-6">
+                <div className="space-y-2">
+                  <div className="inline-flex items-center gap-2 bg-yellow-600 px-3 py-1 rounded text-[10px] font-bold tracking-widest uppercase">Personnel File</div>
+                  <h2 className="text-3xl font-black uppercase tracking-tight">{application.username}</h2>
+                  <p className="text-slate-400 font-mono text-sm tracking-tighter opacity-50">ID: {user.uid.toUpperCase()}</p>
+                </div>
+                <div className="text-left sm:text-right">
+                  <div className="text-[10px] text-slate-400 font-bold uppercase tracking-widest mb-1">Status</div>
+                  <StatusBadge status={application.status} />
+                </div>
+              </div>
+              <div className="p-8 sm:p-12 grid md:grid-cols-2 gap-12">
+                <div className="space-y-8">
+                  <h3 className="font-bold text-xl text-slate-800 border-b pb-3 flex items-center gap-2 uppercase tracking-tighter"><FileText className="text-yellow-600" size={20} /> Service Record</h3>
+                  <div className="bg-slate-50 p-6 rounded-2xl space-y-4">
+                     <p className="text-sm font-bold uppercase text-slate-400 border-b border-slate-200 pb-2">Experience</p>
+                     <p className="text-sm text-slate-700 italic">{application.experience}</p>
+                  </div>
+                </div>
+                <div className="bg-slate-900 text-white p-8 rounded-2xl flex flex-col justify-center text-center space-y-4 shadow-2xl">
+                   <Shield size={48} className="mx-auto text-yellow-600" />
+                   <h4 className="text-xl font-black uppercase">Authentication Center</h4>
+                   <p className="text-xs text-slate-400 leading-relaxed">System updates every 24 hours. If your status is "Accepted", check your Discord DM for onboarding.</p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {view === 'admin' && isAdmin && (
+          <div className="space-y-10 animate-in fade-in zoom-in-95 duration-500">
+            <div className="bg-red-800 text-white p-8 rounded-2xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-6 shadow-2xl border-l-[12px] border-red-600">
+              <div>
+                <h2 className="text-3xl font-black uppercase tracking-widest leading-none">Command Terminal</h2>
+                <p className="text-red-200 text-[10px] font-mono mt-2 tracking-widest">SECURE CHANNEL // SYSTEM_ADMIN_OVERRIDE</p>
+              </div>
+              <Settings size={32} className="animate-spin-slow opacity-30" />
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+              {/* JOBS & DIVISIONS MANAGEMENT */}
+              <div className="space-y-8">
+                
+                {/* Security Configuration */}
+                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-lg space-y-6 border-t-4 border-red-600">
+                   <h3 className="font-black text-lg uppercase flex items-center gap-2"><Key size={20} className="text-red-600" /> Security Override</h3>
+                   <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Entry PIN (Admin Password)</label>
+                    <div className="flex gap-2">
+                      <input 
+                        type="text"
+                        className="flex-1 text-xs p-3 bg-slate-50 border rounded-xl font-mono tracking-widest" 
+                        value={siteData.adminPin} 
+                        onChange={(e) => setSiteData({...siteData, adminPin: e.target.value})} 
+                      />
+                      <button onClick={() => updateSiteConfig(siteData)} className="p-3 bg-slate-900 text-white rounded-xl hover:bg-red-600 transition"><CheckCircle size={18}/></button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Career Postings */}
+                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-lg space-y-6">
+                  <div className="flex justify-between items-center border-b pb-4">
+                    <h3 className="font-black text-lg uppercase flex items-center gap-2"><Briefcase size={20} className="text-red-600" /> Career Postings</h3>
+                    <button onClick={addJob} className="bg-slate-900 text-white p-2 rounded-lg hover:bg-red-700 transition"><Plus size={18} /></button>
+                  </div>
+                  <div className="space-y-4 max-h-[400px] overflow-y-auto pr-2">
+                    {siteData.jobs.map((job, idx) => (
+                      <div key={job.id} className="p-4 bg-slate-50 rounded-xl border border-slate-100 space-y-3 relative group">
+                        <button onClick={() => removeJob(job.id)} className="absolute top-2 right-2 text-slate-300 hover:text-red-600 transition opacity-0 group-hover:opacity-100"><Trash2 size={16}/></button>
+                        <input 
+                          className="w-full font-bold text-sm bg-transparent outline-none border-b border-transparent focus:border-red-400"
+                          value={job.title}
+                          onChange={(e) => {
+                            const next = [...siteData.jobs];
+                            next[idx].title = e.target.value;
+                            setSiteData({...siteData, jobs: next});
+                          }}
+                          onBlur={() => updateSiteConfig(siteData)}
+                        />
+                        <textarea 
+                          className="w-full text-xs bg-white p-2 rounded-lg border border-slate-100 min-h-[60px]"
+                          value={job.description}
+                          onChange={(e) => {
+                            const next = [...siteData.jobs];
+                            next[idx].description = e.target.value;
+                            setSiteData({...siteData, jobs: next});
+                          }}
+                          onBlur={() => updateSiteConfig(siteData)}
+                        />
+                        <select 
+                          className="text-[10px] font-bold p-1 rounded bg-white border"
+                          value={job.status}
+                          onChange={(e) => {
+                            const next = [...siteData.jobs];
+                            next[idx].status = e.target.value;
+                            setSiteData({...siteData, jobs: next});
+                            updateSiteConfig({...siteData, jobs: next});
+                          }}
+                        >
+                          <option>Open</option>
+                          <option>Closed</option>
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Division Postings */}
+                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-lg space-y-6">
+                  <div className="flex justify-between items-center border-b pb-4">
+                    <h3 className="font-black text-lg uppercase flex items-center gap-2"><Layers size={20} className="text-red-600" /> Divisions</h3>
+                    <button onClick={addDivision} className="bg-slate-900 text-white p-2 rounded-lg hover:bg-red-700 transition"><Plus size={18} /></button>
+                  </div>
+                  <div className="space-y-3">
+                    {siteData.divisions.map((div, idx) => (
+                      <div key={div.id} className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-100 group">
+                        <input 
+                          className="flex-1 font-bold text-sm bg-transparent outline-none"
+                          value={div.name}
+                          onChange={(e) => {
+                            const next = [...siteData.divisions];
+                            next[idx].name = e.target.value;
+                            setSiteData({...siteData, divisions: next});
+                          }}
+                          onBlur={() => updateSiteConfig(siteData)}
+                        />
+                        <select 
+                          className="text-[10px] font-bold p-1 rounded bg-white border"
+                          value={div.status}
+                          onChange={(e) => {
+                            const next = [...siteData.divisions];
+                            next[idx].status = e.target.value;
+                            setSiteData({...siteData, divisions: next});
+                            updateSiteConfig({...siteData, divisions: next});
+                          }}
+                        >
+                          <option>Open</option>
+                          <option>Closed</option>
+                        </select>
+                        <button onClick={() => removeDivision(div.id)} className="text-slate-300 hover:text-red-600 transition"><Trash2 size={16}/></button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* LINKS & ASSETS MANAGEMENT */}
+              <div className="space-y-8">
+                {/* Hero Asset */}
+                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-lg space-y-4">
+                  <h3 className="font-black text-lg uppercase flex items-center gap-2 text-slate-800"><Settings size={20} /> Terminal UI</h3>
+                  <div className="space-y-2">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Main Hero Image URL</label>
+                    <div className="flex gap-2">
+                      <input className="flex-1 text-xs p-3 bg-slate-50 border rounded-xl" value={siteData.heroImage} onChange={(e) => setSiteData({...siteData, heroImage: e.target.value})} />
+                      <button onClick={() => updateSiteConfig(siteData)} className="p-3 bg-slate-900 text-white rounded-xl"><CheckCircle size={18}/></button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Judiciary Links */}
+                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-lg space-y-6">
+                  <div className="flex justify-between items-center border-b pb-4">
+                    <h3 className="font-black text-lg uppercase flex items-center gap-2"><LinkIcon size={20} className="text-red-600" /> Judiciary Links</h3>
+                    <button onClick={() => addLink('judiciary')} className="bg-slate-900 text-white p-2 rounded-lg hover:bg-red-700 transition"><Plus size={18} /></button>
+                  </div>
+                  <div className="space-y-4">
+                    {siteData.judiciaryLinks?.map((link, idx) => (
+                      <div key={idx} className="grid grid-cols-2 gap-2 bg-slate-50 p-3 rounded-xl relative group">
+                        <button onClick={() => removeLink('judiciary', idx)} className="absolute -right-2 -top-2 bg-white text-red-600 rounded-full border shadow-sm p-1 opacity-0 group-hover:opacity-100 transition"><Trash2 size={12}/></button>
+                        <input className="text-xs font-bold p-2 bg-white border rounded" placeholder="Label" value={link.label} onChange={(e) => {
+                          const next = [...siteData.judiciaryLinks];
+                          next[idx].label = e.target.value;
+                          setSiteData({...siteData, judiciaryLinks: next});
+                        }} onBlur={() => updateSiteConfig(siteData)} />
+                        <input className="text-xs p-2 bg-white border rounded" placeholder="URL" value={link.url} onChange={(e) => {
+                          const next = [...siteData.judiciaryLinks];
+                          next[idx].url = e.target.value;
+                          setSiteData({...siteData, judiciaryLinks: next});
+                        }} onBlur={() => updateSiteConfig(siteData)} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Comms Links */}
+                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-lg space-y-6">
+                  <div className="flex justify-between items-center border-b pb-4">
+                    <h3 className="font-black text-lg uppercase flex items-center gap-2"><ExternalLink size={20} className="text-red-600" /> Communication Channels</h3>
+                    <button onClick={() => addLink('comms')} className="bg-slate-900 text-white p-2 rounded-lg hover:bg-red-700 transition"><Plus size={18} /></button>
+                  </div>
+                  <div className="space-y-4">
+                    {siteData.commsLinks?.map((link, idx) => (
+                      <div key={idx} className="grid grid-cols-2 gap-2 bg-slate-50 p-3 rounded-xl relative group">
+                        <button onClick={() => removeLink('comms', idx)} className="absolute -right-2 -top-2 bg-white text-red-600 rounded-full border shadow-sm p-1 opacity-0 group-hover:opacity-100 transition"><Trash2 size={12}/></button>
+                        <input className="text-xs font-bold p-2 bg-white border rounded" placeholder="Label" value={link.label} onChange={(e) => {
+                          const next = [...siteData.commsLinks];
+                          next[idx].label = e.target.value;
+                          setSiteData({...siteData, commsLinks: next});
+                        }} onBlur={() => updateSiteConfig(siteData)} />
+                        <input className="text-xs p-2 bg-white border rounded" placeholder="URL" value={link.url} onChange={(e) => {
+                          const next = [...siteData.commsLinks];
+                          next[idx].url = e.target.value;
+                          setSiteData({...siteData, commsLinks: next});
+                        }} onBlur={() => updateSiteConfig(siteData)} />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Applicant Queue */}
+            <div className="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-2xl flex flex-col">
+                <div className="p-8 border-b border-slate-100 flex justify-between items-center bg-slate-900 text-white">
+                  <div>
+                    <h3 className="font-black text-2xl uppercase tracking-tighter">Personnel Queue</h3>
+                    <p className="text-slate-400 text-[10px] mt-1 uppercase tracking-widest">Awaiting Verification</p>
+                  </div>
+                  <div className="flex items-center gap-2 bg-red-600 px-4 py-2 rounded-xl text-xs font-black shadow-lg">
+                    {allApplications.length} ACTIVE FILES
+                  </div>
+                </div>
+                <div className="divide-y divide-slate-100 max-h-[600px] overflow-y-auto">
+                  {allApplications.map(appItem => (
+                    <div key={appItem.userId} className="p-8 hover:bg-slate-50 transition-all border-l-4 border-transparent hover:border-red-600">
+                        <div className="flex flex-col sm:flex-row justify-between items-start mb-6 gap-4">
+                          <div>
+                            <h4 className="font-black text-xl text-slate-900 uppercase tracking-tight">{appItem.username}</h4>
+                            <div className="flex flex-wrap gap-2 mt-2">
+                              <span className="text-[10px] font-bold bg-slate-900 text-white px-2 py-1 rounded shadow-sm">{appItem.discord}</span>
+                              <span className="text-[10px] font-mono text-slate-400 bg-slate-100 px-2 py-1 rounded tracking-tighter uppercase">ID: {appItem.userId.slice(0, 8)}</span>
+                            </div>
+                          </div>
+                          <select 
+                            value={appItem.status}
+                            onChange={(e) => updateAppStatus(appItem.userId, e.target.value)}
+                            className="text-xs font-black border rounded-xl p-3 shadow-sm outline-none uppercase bg-white"
+                          >
+                            <option>Pending</option>
+                            <option>Under Review</option>
+                            <option>Accepted</option>
+                            <option>Rejected</option>
+                          </select>
+                        </div>
+                        <div className="grid sm:grid-cols-2 gap-4 text-sm">
+                           <div className="bg-white p-3 rounded-lg border text-xs"><strong>Statement:</strong> {appItem.reason}</div>
+                           <div className="bg-white p-3 rounded-lg border text-xs"><strong>History:</strong> {appItem.experience}</div>
+                        </div>
+                    </div>
+                  ))}
+                </div>
+            </div>
+          </div>
+        )}
+      </main>
+
+      {/* Footer */}
+      <footer className="mt-20 border-t border-slate-200 bg-slate-900 py-16 text-white relative overflow-hidden">
+        <div className="absolute top-0 right-0 p-20 opacity-5 pointer-events-none">
+          <Shield size={300} />
+        </div>
+        <div className="max-w-7xl mx-auto px-6 grid grid-cols-1 md:grid-cols-4 gap-12 text-sm relative z-10">
+          <div className="space-y-6">
+             <div className="flex items-center gap-3">
+                <div className="bg-yellow-600 p-2 rounded shadow-lg">
+                  <Shield size={24} />
+                </div>
+                <span className="font-black uppercase tracking-[0.2em] text-lg">USMS RECRUIT</span>
+             </div>
+             <p className="text-slate-400 leading-relaxed text-xs">Justice, Integrity, Service. Since 1789.</p>
+          </div>
+          <div>
+            <h4 className="font-black mb-6 uppercase text-[10px] tracking-[0.3em] text-yellow-500">Judiciary</h4>
+            <ul className="space-y-3 text-slate-400 font-medium text-xs">
+              {siteData.judiciaryLinks?.map((link, idx) => (
+                <li key={idx}><a href={link.url} className="hover:text-white transition flex items-center gap-1"><ExternalLink size={10}/> {link.label}</a></li>
+              ))}
+            </ul>
+          </div>
+          <div>
+            <h4 className="font-black mb-6 uppercase text-[10px] tracking-[0.3em] text-yellow-500">Comms</h4>
+            <ul className="space-y-3 text-slate-400 font-medium text-xs">
+               {siteData.commsLinks?.map((link, idx) => (
+                <li key={idx}><a href={link.url} className="hover:text-white transition flex items-center gap-1"><ExternalLink size={10}/> {link.label}</a></li>
+              ))}
+            </ul>
+          </div>
+          <div className="bg-slate-800/50 backdrop-blur-sm rounded-2xl p-6 border border-slate-700/50">
+            <h4 className="font-black mb-3 uppercase text-[10px] tracking-[0.3em] text-yellow-500">System Trace</h4>
+            <div className="flex items-center gap-3 text-[10px] font-mono">
+              <div className="h-2 w-2 bg-green-500 rounded-full animate-pulse shadow-[0_0_8px_#22c55e]"></div>
+              <span>CONNECTED_SECURE</span>
+            </div>
+          </div>
+        </div>
+      </footer>
+    </div>
+  );
+}
